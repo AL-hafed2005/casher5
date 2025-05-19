@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+  <meta charset="UTF-8" />
+  <title>واجهة البيع</title>
+  <link rel="stylesheet" href="style.css">
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  <!-- JsBarcode -->
+  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+  <!-- QuaggaJS -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
+</head>
+
+<body>
+  <h2>واجهة البيع</h2>
+
+  <!-- البحث والماسح -->
+  <div style="text-align: center; margin-bottom: 20px;">
+    <input type="text" id="searchInput" placeholder="ابحث باسم المنتج..." oninput="searchItems()" style="padding: 10px; font-size: 16px; width: 300px; border-radius: 8px; border: 1px solid #ccc;" />
+    <button onclick="startBarcodeScanner()" style="padding: 10px 15px; font-size: 16px; border-radius: 8px; background-color: #27ae60; color: white; border: none;">
+      📷 افتح الكاميرا لبحث باركود
+    </button>
+  </div>
+
+  <div id="scanner" style="display:none; margin: 0 auto 20px auto; text-align: center;">
+    <div style="display: inline-block; border: 3px solid #27ae60; border-radius: 12px; overflow: hidden; background: #fff;">
+      <div id="interactive" style="width:350px;height:260px;"></div>
+      <div style="color:#27ae60; margin:10px 0;">وجّه الباركود نحو الكاميرا</div>
+      <button onclick="closeScanner()" style="margin-bottom:10px;padding:6px 20px;border-radius:8px;background:#d32f2f;color:#fff;border:none;">إغلاق الكاميرا</button>
+    </div>
+  </div>
+
+  <ul id="itemsList"></ul>
+
+  <!-- أضف هذا الكود أسفل قائمة المنتجات مباشرة وقبل <script> أو قبل الشريط الجانبي -->
+  <div id="cartContainer" style="max-width:400px;margin:30px auto 20px auto;background:#f8f9fa;border-radius:12px;padding:18px 20px;box-shadow:0 2px 10px #0001;">
+    <h3 style="color:#23395d;margin-bottom:15px;">🛒 سلة المشتريات</h3>
+    <ul id="cartList" style="list-style:none;padding:0;margin-bottom:10px;"></ul>
+    <p id="totalPrice" style="font-weight:bold;">المجموع: 0 دينار</p>
+    <button onclick="purchaseCart()" style="padding:10px 30px;background:#27ae60;color:#fff;border:none;border-radius:8px;font-size:17px;cursor:pointer;">تأكيد الشراء</button>
+  </div>
+
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyCnyLJmfaJZAW8c7_LaZo8G63UPWE3M6bs",
+      authDomain: "kasher-e52a0.firebaseapp.com",
+      projectId: "kasher-e52a0",
+      storageBucket: "kasher-e52a0.firebasestorage.app",
+      messagingSenderId: "424841509626",
+      appId: "1:424841509626:web:9578c33123e2fd6ff0e743",
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+
+    let globalItems = [];
+
+    function loadItems() {
+      db.collection("items").orderBy("timestamp", "desc").get()
+        .then(querySnapshot => {
+          const list = document.getElementById('itemsList');
+          list.innerHTML = '';
+          globalItems = [];
+
+          querySnapshot.forEach((doc, index) => {
+            const item = doc.data();
+            item.id = doc.id;
+            item.barcode = (1000 + index).toString();
+            globalItems.push(item);
+            const li = document.createElement('li');
+
+            li.innerHTML = `
+              <div><span class="label">اسم:</span> ${item.name}</div>
+              <div><span class="label">السعر:</span> ${item.price}</div>
+              <div><span class="label">العدد:</span> ${item.quantity}</div>
+              <div><span class="label">الحجم:</span> ${item.size}</div>
+              <div><span class="label">الجنس:</span> ${item.gender}</div>
+              <div><span class="label">اللون:</span> ${item.color || "غير محدد"}</div>
+              <svg id="barcode-${index}" class="barcode"></svg>
+              <div class="barcode-caption">${item.name}</div>
+              <button class="add-to-cart-btn" onclick="addToCart('${item.id}')">🛒 أضف إلى السلة</button>
+            `;
+
+            list.appendChild(li);
+
+            JsBarcode(`#barcode-${index}`, item.barcode, {
+              format: "CODE128",
+              lineColor: "#2980b9",
+              width: 2,
+              height: 50,
+              displayValue: false
+            });
+          });
+        })
+        .catch(error => {
+          console.error("خطأ في جلب البيانات: ", error);
+        });
+    }
+
+    function searchItems() {
+      const query = document.getElementById("searchInput").value.trim().toLowerCase();
+      const items = document.querySelectorAll("#itemsList li");
+
+      items.forEach(item => {
+        const name = item.querySelector(".barcode-caption").textContent.toLowerCase();
+        item.style.display = name.includes(query) ? "flex" : "none";
+      });
+    }
+
+    function startBarcodeScanner() {
+      const scannerArea = document.getElementById("scanner");
+      scannerArea.style.display = "block";
+
+      if (Quagga.initialized) {
+        Quagga.start();
+        return;
+      }
+
+      Quagga.init({
+        inputStream: {
+          name: "Live",
+          type: "LiveStream",
+          target: document.querySelector('#interactive'),
+          constraints: {
+            facingMode: "environment"
+          }
+        },
+        locator: {
+          patchSize: "medium",
+          halfSample: true
+        },
+        decoder: {
+          readers: ["code_128_reader", "ean_reader", "ean_8_reader"]
+        },
+        locate: true
+      }, function (err) {
+        if (err) {
+          console.error("Quagga init error:", err);
+          alert("تعذر تشغيل الكاميرا.");
+          return;
+        }
+        Quagga.initialized = true;
+        Quagga.start();
+      });
+
+      Quagga.onDetected(data => {
+        const code = data.codeResult.code;
+        Quagga.stop();
+        scannerArea.style.display = "none";
+
+        const found = globalItems.find(item => item.barcode === code);
+        if (found) {
+          document.getElementById("searchInput").value = found.name;
+          searchItems();
+          alert("تم العثور على المنتج: " + found.name);
+        } else {
+          alert("لم يتم العثور على المنتج بهذا الباركود: " + code);
+        }
+      });
+    }
+
+    function closeScanner() {
+      Quagga.stop();
+      document.getElementById("scanner").style.display = "none";
+    }
+
+    let cart = [];
+
+    function addToCart(itemId) {
+      const item = globalItems.find(i => i.id === itemId);
+      if (!item) return;
+
+      const existing = cart.find(i => i.id === itemId);
+      if (existing) {
+        if (existing.selectedQty < item.quantity) {
+          existing.selectedQty += 1;
+        } else {
+          alert("لا يمكن إضافة أكثر من المتوفر في المخزون.");
+        }
+      } else {
+        cart.push({ ...item, selectedQty: 1 });
+      }
+      updateCartDisplay();
+    }
+
+    function updateCartDisplay() {
+      const cartList = document.getElementById("cartList");
+      const totalPriceElement = document.getElementById("totalPrice");
+      cartList.innerHTML = "";
+
+      let total = 0;
+
+      cart.forEach(item => {
+        const li = document.createElement("li");
+        li.textContent = `${item.name} - ${item.price} دينار × ${item.selectedQty} `;
+
+        // زر زيادة العدد
+        const plusBtn = document.createElement("button");
+        plusBtn.textContent = "+";
+        plusBtn.style.margin = "0 5px";
+        plusBtn.onclick = () => {
+          if (item.selectedQty < item.quantity) {
+            item.selectedQty += 1;
+            updateCartDisplay();
+          }
+        };
+
+        // زر إنقاص العدد
+        const minusBtn = document.createElement("button");
+        minusBtn.textContent = "-";
+        minusBtn.style.margin = "0 5px";
+        minusBtn.onclick = () => {
+          item.selectedQty -= 1;
+          if (item.selectedQty <= 0) {
+            cart = cart.filter(i => i.id !== item.id);
+          }
+          updateCartDisplay();
+        };
+
+        // زر حذف نهائي
+        const removeBtn = document.createElement("button");
+        removeBtn.textContent = "❌";
+        removeBtn.style.marginRight = "10px";
+        removeBtn.onclick = () => removeFromCart(item.id);
+
+        li.appendChild(plusBtn);
+        li.appendChild(minusBtn);
+        li.appendChild(removeBtn);
+        cartList.appendChild(li);
+
+        total += parseFloat(item.price) * item.selectedQty;
+      });
+
+      totalPriceElement.textContent = `المجموع: ${total.toFixed(2)} دينار`;
+    }
+
+    function removeFromCart(itemId) {
+      cart = cart.filter(item => item.id !== itemId);
+      updateCartDisplay();
+    }
+
+    function purchaseCart() {
+      if (cart.length === 0) {
+        alert("السلة فارغة.");
+        return;
+      }
+
+      const confirmPurchase = confirm("هل أنت متأكد من شراء كل العناصر؟");
+      if (!confirmPurchase) return;
+
+      // تحديث الكميات في قاعدة البيانات
+      const promises = cart.map(item => {
+        const itemRef = db.collection("items").doc(item.id);
+        return itemRef.get().then(doc => {
+          if (doc.exists) {
+            const data = doc.data();
+            if (data.quantity > item.selectedQty) {
+              return itemRef.update({ quantity: data.quantity - item.selectedQty });
+            } else {
+              return itemRef.delete();
+            }
+          }
+        });
+      });
+
+      Promise.all(promises).then(() => {
+        alert("تمت عملية الشراء بنجاح.");
+        cart = [];
+        updateCartDisplay();
+        loadItems();
+      }).catch(error => {
+        console.error("خطأ أثناء الشراء:", error);
+      });
+    }
+
+    window.onload = () => {
+      loadItems();
+    };
+  </script>
+
+</body>
+</html>
